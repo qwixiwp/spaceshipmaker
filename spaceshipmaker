@@ -1,0 +1,149 @@
+import bpy
+import bmesh
+import random
+import mathutils
+from mathutils import Vector
+
+SC_CUBES = 20
+SC_MAXSIZE = 10
+SC_MINSIZE = 1
+SC_MAXDISPLACEMENT = 2
+SC_MINDISPLACEMENT = -2
+SC_MAXSCALE_X = 3.0
+SC_MINSCALE_X = 0.5
+SC_SCALEFACTOR = (0.1, 1.0)
+SC_MINEXTRUDE_1 = 0.5
+SC_MAXEXTRUDE_1 = 1.5
+SC_MAX_DISPLACELENGTH = 0.9
+
+def apply_all_modifiers(obj):
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    for modifier in obj.modifiers:
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+def booleanUnionBatch(target, objects):
+    for obj in objects:
+        boolean_modifier = target.modifiers.new("Boolean", 'BOOLEAN')
+        boolean_modifier.object = obj
+        boolean_modifier.operation = 'UNION'
+        boolean_modifier.solver = 'FAST'
+    # Apply modifiers only after Boolean operations
+    apply_all_modifiers(target)
+
+def setProceduralMaterial(obj, material_name):
+    material = bpy.data.materials.new(name=material_name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+    output_node = nodes.new(type='ShaderNodeOutputMaterial')
+    shader_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+    shader_node.inputs['Roughness'].default_value = random.random()
+    shader_node.inputs['Metallic'].default_value = random.random()
+    shader_node.inputs['Specular Tint'].default_value = (random.random(), random.random(), random.random(), random.uniform(0.0, 1.0))  # Fixed RGB tuple
+    texture_node = nodes.new(type='ShaderNodeRGB')
+    texture_node.outputs["Color"].default_value = (random.random() / 2, random.random() / 2, random.random() / 2, 1.0)
+    links.new(texture_node.outputs['Color'], shader_node.inputs['Base Color'])
+    links.new(shader_node.outputs['BSDF'], output_node.inputs['Surface'])
+    if obj.data.materials:
+        obj.data.materials[0] = material
+    else:
+        obj.data.materials.append(material)
+
+def arrange_spaceship_parts(cubes):
+    center = cubes[0]
+    center.location = (0, 0, 0)
+    for i, cube in enumerate(cubes[1:], start=1):
+        if i % 2 == 0:
+            cube.location.x = center.location.x + (i * SC_MAX_DISPLACELENGTH)
+        else:
+            cube.location.x = center.location.x - (i * SC_MAX_DISPLACELENGTH)
+
+
+def function2(cube):
+    subdivision_modifier = cube.modifiers.new("Subdivision", 'SUBSURF')
+    rand_levels = random.randint(1, 3)
+    subdivision_modifier.levels = rand_levels
+    subdivision_modifier.render_levels = rand_levels
+    subdivision_modifier.subdivision_type = 'CATMULL_CLARK'
+    subdivision_modifier.use_creases = random.choice([True, False])
+    subdivision_modifier.use_custom_normals = random.choice([True, False])
+    bpy.context.view_layer.update()
+
+def function3(cube):
+    remesh_modifier = cube.modifiers.new("Remesh", 'REMESH')
+    mode = random.choice(['VOXEL'])
+    remesh_modifier.voxel_size = random.uniform(0.25, 0.49)
+    
+    bpy.context.view_layer.update()
+
+def random_function(cube):
+    functions = [function2, function3]
+    random.choice(functions)(cube)
+
+#Main start
+new_collection = bpy.data.collections.new('RandomCubes')
+bpy.context.scene.collection.children.link(new_collection)
+cubes = []
+
+# Create cubes
+for _ in range(SC_CUBES):
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(0,0,0))
+    cube = bpy.context.active_object
+    cube.dimensions = (
+        random.uniform(SC_MINSIZE, SC_MAXSIZE),
+        random.uniform(SC_MINSIZE, SC_MAXSIZE),
+        random.uniform(SC_MINSIZE, SC_MAXSIZE)
+    )
+    new_collection.objects.link(cube)
+    bpy.context.collection.objects.unlink(cube)
+    cube.scale.x *= random.uniform(SC_MINSCALE_X, SC_MAXSCALE_X)
+    random_function(cube)
+    cubes.append(cube)
+
+# Arrange cubes into spaceship shape
+arrange_spaceship_parts(cubes)
+
+# Apply Boolean Unions in Batch
+bpy.ops.object.mode_set(mode='OBJECT')
+booleanUnionBatch(cubes[0], cubes[1:])
+
+setProceduralMaterial(cubes[0], "testmaterial")
+
+# Move all previous objects in Y axis by 2x their size and hide the copy
+y_displacement = cubes[0].dimensions.y * 2
+
+for collection in list(bpy.data.collections):
+    if collection.name.startswith('RandomCubes'):
+        objects_to_delete = list(collection.objects)[1:]
+        for obj in collection.objects:
+            obj.location.y += y_displacement
+        if len(objects_to_delete) > 0:
+            for obj in objects_to_delete:
+                obj.hide_set(True)
+                obj.hide_render = True
+                
+latest_collection = max([col for col in bpy.data.collections if col.name.startswith('RandomCubes')], key=lambda c: c.name, default=None)
+if latest_collection:
+    if collection.name.startswith('RandomCubes'):
+        for obj in collection.objects:
+            obj.location.y -= y_displacement
+            
+    if len(latest_collection.objects) > 0:
+        first_obj = latest_collection.objects[0]
+        first_obj.location.y += y_displacement
+    
+    for obj in latest_collection.objects:
+        obj.hide_set(False)
+        obj.hide_render = False
+
+# Perform final parenting only after all transformations
+for cube in cubes:
+    cube.select_set(True)
+bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+bpy.ops.object.select_all(action='DESELECT')
+
+for cube in cubes[1:]:
+    cube.parent = cubes[0]
